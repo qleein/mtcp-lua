@@ -36,8 +36,8 @@ struct event_s {
     int          timedout;
     int          timer_set;
 
-    event_handler_pt    handler;
-    rbtree_node_t       timer;
+    event_handler_pt     handler;
+    rbtree_node_t        timer;
 };
 
 
