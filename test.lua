@@ -4,17 +4,13 @@ local c = a + b
 print('c:', c)
 print("mtcp.welcome", mtcp.welcome)
 
-
 local function func()
+    print("Come Here")
     mtcp.sleep(2)
-    print("sleepppp")
+    print("Come Here2")
+    return
 end
 
+local co = mtcp.thread.spawn(func)
+print("Exit")
 
-co = coroutine.create(func)
-print("crteate cortoutine")
-
-local res, err = coroutine.resume(co)
-print('res:', res, " err:", err)
-mtcp.sleep(6)
-print("exit")

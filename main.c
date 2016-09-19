@@ -12,6 +12,7 @@
 
 #include "event_timer.h"
 
+char mtcp_lua_coroutines_key;
 
 #define mtcp_lua_ctx_key  "__mtcp_lua_ctx"
 
@@ -19,9 +20,101 @@ typedef struct mtcp_lua_ctx_s   mtcp_lua_ctx_t;
 
 struct mtcp_lua_ctx_s {
     lua_State           *vm;
-
+    int                 co_ref;
     event_t             ev;
 };
+
+void
+mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx);
+void timer_handler(event_t *ev);
+
+lua_State *
+mtcp_lua_new_thread(lua_State *L, int *ref)
+{
+    int base;
+    lua_State   *co;
+
+    base = lua_gettop(L);
+
+    lua_pushlightuserdata(L, &mtcp_lua_coroutines_key);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+
+    co = lua_newthread(L);
+
+    lua_createtable(co, 0, 1);
+    lua_pushvalue(co, -1);
+    lua_setfield(co, -2, "_G");
+
+    lua_createtable(co, 0, 1);
+    lua_pushvalue(co, LUA_GLOBALSINDEX);
+    lua_setfield(co, -2, "__index");
+    lua_setmetatable(co, -2);
+
+    lua_replace(co, LUA_GLOBALSINDEX);
+
+    *ref = luaL_ref(L, -2);
+
+    if (*ref == LUA_NOREF) {
+        lua_settop(L, base);
+        return NULL;
+    }
+
+    lua_settop(L, base);
+    return co;
+}
+
+static int
+mtcp_lua_thread_spawn(lua_State *L)
+{
+    int co_ref;
+    lua_State *co;
+
+    co = mtcp_lua_new_thread(L, &co_ref);
+    
+    lua_xmove(L, co, 1);
+
+    mtcp_lua_ctx_t  *ctx = malloc(sizeof(mtcp_lua_ctx_t));
+    memset(ctx, 0, sizeof(*ctx));
+
+    ctx->vm = co;
+    ctx->co_ref = co_ref;
+    ctx->ev.data = ctx;
+    ctx->ev.write = 0;
+    ctx->ev.timer_set = 0;
+    ctx->ev.timedout = 0;
+    ctx->ev.handler = timer_handler;
+    event_add_timer(&ctx->ev, 1000);
+
+    lua_pushlightuserdata(co, ctx);
+    lua_setglobal(co, mtcp_lua_ctx_key);
+
+
+    mtcp_lua_ctx_t *octx;
+    lua_getglobal(L, mtcp_lua_ctx_key);
+    octx = lua_touserdata(L, -1);
+    lua_pop(L, 1);
+
+    if (octx == NULL) {
+        return luaL_error(L, "no mtcp_lua_ctx found");
+    }
+    event_add_timer(&octx->ev, 2000);
+    printf("spawn thread successful and add timer");
+    //event_add_timer(&ctx->ev, 0);
+    return lua_yield(L, 1);
+}
+
+
+int mtcp_lua_inject_mtcp_thread_api(lua_State *L)
+{
+    lua_createtable(L, 0, 4);
+
+    lua_pushcfunction(L, mtcp_lua_thread_spawn);
+    lua_setfield(L, -2, "spawn");
+
+    lua_setfield(L, -2, "thread");
+
+    return 1;
+}
 
 
 int mtcp_lua_mtcp_sleep(lua_State *L)
@@ -60,6 +153,9 @@ int mtcp_lua_inject_mtcp_api(lua_State *L, int flags)
 
     lua_pushcfunction(L, mtcp_lua_mtcp_sleep);
     lua_setfield(L, -2, "sleep");
+
+    mtcp_lua_inject_mtcp_thread_api(L);
+
     lua_setglobal(L, "mtcp");
 
     return 1;
@@ -79,6 +175,10 @@ lua_init(int flags) {
 		printf("inject api failed.\n");
 		return NULL;
 	}
+
+    lua_pushlightuserdata(L, &mtcp_lua_coroutines_key);
+    lua_createtable(L, 0, 32);
+    lua_rawset(L, LUA_REGISTRYINDEX);
 
 	return L;
 }
@@ -125,9 +225,9 @@ mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx)
 		printf("res:%s.\n", luaL_checkstring(L, -1));
 	}
 
-	lua_close(L);
+	//lua_close(L);
 
-	printf("Come here.\n");
+	//printf("Come here.\n");
 
 	return;
 }
@@ -135,7 +235,7 @@ mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx)
 
 void timer_handler(event_t *ev)
 {
-    printf("time reach.\n");
+    //printf("time reach.\n");
 
     mtcp_lua_ctx_t *ctx = ev->data;
 
