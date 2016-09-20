@@ -6,7 +6,7 @@ print("mtcp.welcome", mtcp.welcome)
 
 local function func()
     print("Come Here")
-    mtcp.sleep(2)
+    --mtcp.sleep(2)
     print("Come Here2")
     return
 end

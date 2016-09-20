@@ -11,6 +11,7 @@
 #include <lauxlib.h>
 
 #include "event_timer.h"
+#include "mtcp_lua_socket_tcp.h"
 
 char mtcp_lua_coroutines_key;
 
@@ -40,6 +41,9 @@ mtcp_lua_new_thread(lua_State *L, int *ref)
     lua_rawget(L, LUA_REGISTRYINDEX);
 
     co = lua_newthread(L);
+    if (co == NULL) {
+        printf("NULLLLL.\n");
+    }
 
     lua_createtable(co, 0, 1);
     lua_pushvalue(co, -1);
@@ -60,6 +64,7 @@ mtcp_lua_new_thread(lua_State *L, int *ref)
     }
 
     lua_settop(L, base);
+
     return co;
 }
 
@@ -155,6 +160,7 @@ int mtcp_lua_inject_mtcp_api(lua_State *L, int flags)
     lua_setfield(L, -2, "sleep");
 
     mtcp_lua_inject_mtcp_thread_api(L);
+    mtcp_lua_inject_socket_tcp_api(L);
 
     lua_setglobal(L, "mtcp");
 
@@ -190,6 +196,7 @@ mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx)
     int ret;
     lua_State *L = ctx->vm;
 	//ret = lua_pcall(L, 0, LUA_MULTRET, 0);
+    lua_gc(L, LUA_GCCOLLECT, 0);
 	ret = lua_resume(L, 0);
     switch (ret) {
     case LUA_YIELD:
@@ -228,7 +235,6 @@ mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx)
 	//lua_close(L);
 
 	//printf("Come here.\n");
-
 	return;
 }
 
