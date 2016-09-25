@@ -5,29 +5,26 @@
 #include <stdint.h>
 #include <errno.h>
 #include <sys/queue.h>
+#include <sys/epoll.h>
 
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
 
+#include "main.h"
 #include "event_timer.h"
 #include "mtcp_lua_socket_tcp.h"
 
+
 char mtcp_lua_coroutines_key;
 
-#define mtcp_lua_ctx_key  "__mtcp_lua_ctx"
 
-typedef struct mtcp_lua_ctx_s   mtcp_lua_ctx_t;
 
-struct mtcp_lua_ctx_s {
-    lua_State           *vm;
-    int                 co_ref;
-    event_t             ev;
-};
 
 void
-mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx);
+mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx, int narg);
 void timer_handler(event_t *ev);
+
 
 lua_State *
 mtcp_lua_new_thread(lua_State *L, int *ref)
@@ -121,6 +118,16 @@ int mtcp_lua_inject_mtcp_thread_api(lua_State *L)
     return 1;
 }
 
+mtcp_lua_ctx_t  *
+mtcp_lua_get_ctx(lua_State *L)
+{
+    mtcp_lua_ctx_t *ctx;
+    lua_getglobal(L, mtcp_lua_ctx_key);
+    ctx = lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    return ctx;
+}
+
 
 int mtcp_lua_mtcp_sleep(lua_State *L)
 {
@@ -191,13 +198,13 @@ lua_init(int flags) {
 
 
 void
-mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx)
+mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx, int narg)
 {
     int ret;
     lua_State *L = ctx->vm;
 	//ret = lua_pcall(L, 0, LUA_MULTRET, 0);
-    lua_gc(L, LUA_GCCOLLECT, 0);
-	ret = lua_resume(L, 0);
+    //lua_gc(L, LUA_GCCOLLECT, 0);
+	ret = lua_resume(L, narg);
     switch (ret) {
     case LUA_YIELD:
         printf("yield.\n");
@@ -245,7 +252,7 @@ void timer_handler(event_t *ev)
 
     mtcp_lua_ctx_t *ctx = ev->data;
 
-    mtcp_lua_run_thread(ctx);
+    mtcp_lua_run_thread(ctx, 0);
 
     return;
 }
@@ -291,16 +298,64 @@ main_thread_init(void)
 }
 
 
+int epoll_fd = -1;
+
+int epoll_add_event(int fd, int op, int events, void *ptr)
+{
+    int rc;
+    struct epoll_event ev;
+    ev.events = events | EPOLLET;
+    ev.data.ptr = ptr;
+    rc = epoll_ctl(epoll_fd, op, fd, &ev);
+    if (rc < 0) {
+        printf("epoll ctl failed.\n");
+        return -1;
+    }
+    printf("fd:%d, op:%d, ptr:%lu.\n", fd, op, ptr);
+    return 0;
+}
 
 int
 main(int argc, char *argv[])
 {
 
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd < 0) {
+        printf("epoll create failed.\n");
+        exit(1);
+    }
+
+
+
     event_timer_init();
 
     main_thread_init();
 
+#define MAX_EPOLL_SIZE  1000
+    int nfds;
+    struct epoll_event      events[MAX_EPOLL_SIZE];
     while (1) {
+        nfds = epoll_wait(epoll_fd, events, MAX_EPOLL_SIZE, 500);
+        if (nfds < 0) {
+            if (errno != EINTR) {
+                printf("epoll wait failed.\n");
+                break;
+            }
+            continue;
+        }
+
+        int i;
+        for (i = 0; i < nfds; i++) {
+            event_t *ev = events[i].data.ptr;
+        printf("ev:%lu\n", ev);
+            if (ev->handler) {
+                printf("exec event handler.\n");
+                ev->handler(ev);
+            } else printf("no handler defined for event.\n");
+            //rc = process_event(events[i].data.ptr);
+        }
+
+
         event_expire_timers();
         sleep(1);
         printf("sleep for 1s in main cycle.\n");
