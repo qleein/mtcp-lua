@@ -26,21 +26,30 @@ typedef struct {
     int         connected;
     int         busy;
     lua_State   *vm;
-    int         timeout;
+    int         connect_timeout;
+    int         read_timeout;
+    int         write_timeout;
 
 } mtcp_lua_socket_tcp_ctx_t;
 
 
 static int mtcp_lua_socket_tcp(lua_State *L)
 {
+    int n = lua_gettop(L);
+    if (n != 0) {
+        return luaL_error(L, "expect 0 arguments, but got %d", n);
+    }
+
+
     mtcp_lua_socket_tcp_ctx_t *sctx;
 
     sctx = (mtcp_lua_socket_tcp_ctx_t *)lua_newuserdata(L, sizeof(*sctx));
     sctx->fd = -1;
     sctx->busy = 0;
     sctx->vm = L;
-    sctx->timeout = 0;
-
+    sctx->connect_timeout = 6;
+    sctx->read_timeout = 6;
+    sctx->write_timeout = 6;
 
     luaL_getmetatable(L, libname);
     lua_setmetatable(L, -2);
@@ -93,13 +102,29 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
 
     mtcp_lua_socket_tcp_ctx_t *sctx;
     sctx = (mtcp_lua_socket_tcp_ctx_t *)lua_touserdata(L, 1);
-    if (sctx->fd != 1) {
+    if (sctx->fd != -1) {
+        printf("Socket conneced. close current.\n");
         close(sctx->fd);
     }
 
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
 
     const char *host = luaL_checkstring(L, 2);
+    int ret = inet_pton(AF_INET, host, &addr.sin_addr.s_addr);
+    if (ret != 1) {
+        printf("invalid ip address.\n");
+        lua_pushnil(L);
+        lua_pushliteral(L, "invalid ip address");
+        return 2;
+    }
+
     int port = luaL_checkint(L, 3);
+    if (port < 0 || port > 65535) {
+        return luaL_error(L, "invalid port");
+    }
+    addr.sin_port = htons(port);
 
     int fd;
     fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -109,19 +134,13 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
         return 2;
     }
 
+    //set socket unblocking
     if(fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
         lua_pushnil(L);
         lua_pushliteral(L, "set noblock failed");
         return 2;
     }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(host);
-    addr.sin_port = htons(port);
-
-    int ret;
     ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (ret == 0) {
         sctx->fd = fd;
@@ -148,7 +167,7 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
     ev->timedout = 0;
     ev->handler = mtcp_lua_socket_tcp_connect_handler;
 
-    event_add_timer(ev, 5);
+    event_add_timer(ev, sctx->connect_timeout);
     epoll_add_event(sctx->fd, EPOLL_CTL_ADD, EPOLLOUT, ev);
 
     return lua_yield(L, 0);
@@ -221,6 +240,29 @@ void mtcp_lua_socket_tcp_recv_handler(event_t *ev)
     return;
 }
 
+
+static int
+mtcp_lua_socket_tcp_settimeout(lua_State *L)
+{
+    int n = lua_gettop(L);
+    if (n != 1) {
+        return luaL_error(L, "expect 2 arguments, but got %d", n);
+    }
+
+    mtcp_lua_socket_tcp_ctx_t *sctx;
+    sctx = (mtcp_lua_socket_tcp_ctx_t *)lua_touserdata(L, 1);
+
+    int timeout = luaL_checkint(L, 2);
+    if (timeout <= 0 || timeout > 600) {
+        return luaL_error(L, "exceed limit.");
+    }
+    sctx->connect_timeout = timeout;
+    sctx->read_timeout = timeout;
+    sctx->write_timeout = timeout;
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
 
 static int mtcp_lua_socket_tcp_recv(lua_State *L)
 {
@@ -302,6 +344,9 @@ int mtcp_lua_inject_socket_tcp_api(lua_State *L)
     luaL_newmetatable(L, libname);
     lua_pushcfunction(L, mtcp_lua_socket_tcp_connect);
     lua_setfield(L, -2, "connect");
+
+    lua_pushcfunction(L, mtcp_lua_socket_tcp_settimeout);
+    lua_setfield(L, -2, "settimeout");
 
     lua_pushcfunction(L, mtcp_lua_socket_tcp_send);
     lua_setfield(L, -2, "send");
