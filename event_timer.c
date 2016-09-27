@@ -19,9 +19,9 @@ static rbtree_node_t            event_timer_sentinel;
  */
 
 int
-event_timer_init()
+event_timer_init(rbtree_t *tree)
 {
-    rbtree_init(&event_timer_rbtree, &event_timer_sentinel,
+    rbtree_init(tree, &event_timer_sentinel,
                 rbtree_insert_timer_value);
 
     return 0;
@@ -55,7 +55,7 @@ event_find_timer(void)
 
 
 void
-event_expire_timers(void)
+event_expire_timers(rbtree_t *tree) 
 {
     event_t        *ev;
     rbtree_node_t  *node, *root, *sentinel;
@@ -70,7 +70,7 @@ event_expire_timers(void)
 
         //ngx_mutex_lock(ngx_event_timer_mutex);
 
-        root = event_timer_rbtree.root;
+        root = tree->root;
 
         if (root == sentinel) {
             return;
@@ -83,7 +83,7 @@ event_expire_timers(void)
         if ((msec_int_t) (node->key - current_msec) <= 0) {
             ev = (event_t *) ((char *) node - offsetof(event_t, timer));
 
-            rbtree_delete(&event_timer_rbtree, &ev->timer);
+            rbtree_delete(tree, &ev->timer);
 
             //ngx_mutex_unlock(ngx_event_timer_mutex);
 

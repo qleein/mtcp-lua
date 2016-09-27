@@ -17,7 +17,9 @@
 
 
 char mtcp_lua_coroutines_key;
+char mtcp_lua_mtcp_context_key;
 
+char *global_lua_script = NULL;
 
 
 
@@ -267,14 +269,14 @@ void process_events_and_timers(void)
 }
 
 
-int
-main_thread_init(void)
+mtcp_lua_ctx_t *
+mtcp_lua_vm_init(mtcp_lua_thread_context_t *tctx)
 {
 
 	lua_State *L = lua_init(0);
 	if (!L) return 1;
 
-	int ret = luaL_loadfile(L, "test.lua");
+	int ret = luaL_loadfile(L, global_lua_script);
 	if (ret != 0) {
 		printf("execute lua file failed:%d.\n",ret);
 		printf("res:%s.\n", luaL_checkstring(L, 1));
@@ -294,11 +296,13 @@ main_thread_init(void)
     lua_pushlightuserdata(L, ctx);
     lua_setglobal(L, mtcp_lua_ctx_key);
 
-    return 0;
+    lua_pushlightuserdata(L, tctx);
+    lua_setglobal(L, mtcp_lua_mtcp_context_key);
+    
+    return ctx;
 }
 
 
-int epoll_fd = -1;
 
 int epoll_add_event(int fd, int op, int events, void *ptr)
 {
@@ -315,53 +319,146 @@ int epoll_add_event(int fd, int op, int events, void *ptr)
     return 0;
 }
 
-int
-main(int argc, char *argv[])
-{
+typedef struct {
+    int             core;
+    mctx_t          mctx;
+    int             ep;
+    mtcp_lua_ctx_t  *vm_ctx;
 
-    epoll_fd = epoll_create1(0);
-    if (epoll_fd < 0) {
-        printf("epoll create failed.\n");
-        exit(1);
+} mtcp_lua_thread_context_t;
+
+
+#define MAX_CORE_LIMIT          16
+#define MAX_EPOLL_SIZE          1024
+
+static mtcp_lua_thread_context_t   global_context[MAX_CORE_LIMIT];
+
+
+void *
+thread_entry(void *arg)
+{
+    int core = *(int *)arg;
+
+    if (core < 0 || core > MAX_CORE_LIMIT) {
+        TRACE_ERROR("Invalid core number".\n);
+        return NULL;
     }
 
+    mtcp_lua_thread_context_t *ctx;
+    mtcx_t  mctx;
 
+    mctx = mtcp_create_context(core);
+    if (!ctx->mtcx) {
+        TRACE_ERROR("Failed to create mtcp context.\n");
+        return NULL;
+    }
 
-    event_timer_init();
+    ctx = &global_context[core];
+    ctx->mctx = mctx;
+    ctx->core = core;
 
-    main_thread_init();
+    mtcp_core_affinitize(core);
 
-#define MAX_EPOLL_SIZE  1000
-    int nfds;
-    struct epoll_event      events[MAX_EPOLL_SIZE];
-    while (1) {
-        nfds = epoll_wait(epoll_fd, events, MAX_EPOLL_SIZE, 500);
-        if (nfds < 0) {
+    int maxevent = 1024;
+    //mtcp_init_rss(mctx, saddr, IP_RANGE, daddr, dport);
+    ep = mtcp_epoll_create(mctx, maxevent);
+    if (ep < 0) {
+        TRACE_ERROR("Failed to create epoll struct.\n");
+        exit(EXIT_FAILURE);
+    }
+    ctx->ep = ep;
+
+    int max_events = MAX_EPOLL_SIZE
+    events = (struct mtcp_epoll_event *)calloc(max_events, sizeof(sturct mtcp_epoll_event));
+    if (events == NULL) {
+        TRACE_ERROR("Failed to create event struct.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    ctx->vm_ctx = mtcp_lua_vm_init(ctx);
+    if (ctx->vm_ctx == NULL) {
+        TRACE_ERROR("Failed to init lua.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    ctx->timer = event_timer_init(ctx);
+    if (ctx->timer == NULL) {
+        TRACE_ERROR("Failed to init timer.\n");
+        exit(EXIT_FAILURE);
+    }
+    int nevents;
+    for (;;) {
+        nevents = mtcp_epoll_wait(mctx, ep, events, maxevents, 500);
+        if (nevents < 0) {
             if (errno != EINTR) {
-                printf("epoll wait failed.\n");
-                break;
+                TRACE_ERROR("mtcp_epoll_wait failed, ret:%d\n", nevents);
             }
-            continue;
         }
 
         int i;
-        for (i = 0; i < nfds; i++) {
+        for (i = 0; i < nevents; i++) {
             event_t *ev = events[i].data.ptr;
-        printf("ev:%lu\n", ev);
-            if (ev->handler) {
-                printf("exec event handler.\n");
-                ev->handler(ev);
-            } else printf("no handler defined for event.\n");
-            //rc = process_event(events[i].data.ptr);
+            if (!ev->handler) {
+                TRACE_ERROR("No handler defined for current event.\n");
+                continue;
+            }
+            
+            ev->handler(ev);
         }
 
-
         event_expire_timers();
-        sleep(1);
-        printf("sleep for 1s in main cycle.\n");
+        printf("a main cycle end.\n");
     }
 
     return 0;
 }
 
 
+int main(int argc, char **argv)
+{
+    struct mtcp_conf    mcfg;
+
+    if (argc != 2) {
+        TRACE_CONFIG("Usage: %s lua_script\n", argv[0]);
+        return -1;
+    }
+
+    global_lua_script = argv[1];
+
+    int num_cores = GetNumCPUs();
+    int core_limit = num_cores < MAX_CORE_LIMIT ? num_cores : MAX_CORE_LIMIT;
+    int ret = mtcp_init("mtcp_lua.conf");
+    if (ret) {
+        TRACE_ERROR("Failed to initialize mtcp.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    mtcp_getconf(&mcfg);
+    if (mcfg.num_cores > core_limit) {
+        mcfg.num_cores = core_limt;
+    }
+    num_cores = mcfg.num_cores;
+
+    mtcp_setconf(&mcfg);
+
+    int i;
+
+    int cores[MAX_CORE_LIMIT];
+    for (i = 0; i < num_cores; i++) {
+        cores[i] = i;
+        if (pthread_create(&app_thread[i], NULL, thread_entry,
+                           (void *)&cores[i]))
+        {
+            TRACE_ERROR("Failed to create thread.\n");
+            exit(-1);
+        }
+    }
+
+    for (i = 0; i < num_cores; i++) {
+        pthread_join(app_thread[i], NULL);
+        TRACE_INFO("thread %d joined.\n", i);
+    }
+
+    mtcp_destroy();
+    return 0;
+}

@@ -187,6 +187,12 @@ static int mtcp_lua_socket_tcp_send(lua_State *L)
         return luaL_error(L, "socket not connected.");
     }
 
+    mtcp_lua_thread_context_t *mctx;
+    lua_pushlightuserdata(L, mtcp_lua_thread_context_key);
+    lua_getglobal(L, -1);
+    mctx = (mtcp_lua_thread_context_t *)lua_to
+
+
     size_t len;
     const char *data = luaL_checklstring(L, 2, &len);
     if (write(sctx->fd, data, len) != len) {
