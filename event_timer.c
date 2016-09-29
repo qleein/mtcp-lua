@@ -19,9 +19,9 @@ static rbtree_node_t            event_timer_sentinel;
  */
 
 int
-event_timer_init(rbtree_t *tree)
+event_timer_init(mtcp_lua_ctx_t *ctx)
 {
-    rbtree_init(tree, &event_timer_sentinel,
+    rbtree_init(&ctx->timer, &ctx->sentinel,
                 rbtree_insert_timer_value);
 
     return 0;
@@ -29,17 +29,17 @@ event_timer_init(rbtree_t *tree)
 
 
 msec_t
-event_find_timer(void)
+event_find_timer(rbtree_t *tree)
 {
     msec_int_t      timer;
     rbtree_node_t  *node, *root, *sentinel;
 
-    if (event_timer_rbtree.root == &event_timer_sentinel) {
+    if (tree->root == tree->sentinel) {
         return -1;
     }
 
-    root = event_timer_rbtree.root;
-    sentinel = event_timer_rbtree.sentinel;
+    root = tree->root;
+    sentinel = tree->sentinel;
 
     node = rbtree_min(root, sentinel);
 
@@ -64,7 +64,7 @@ event_expire_timers(rbtree_t *tree)
     gettimeofday(&tv, NULL);
     msec_t current_msec = (msec_t) tv.tv_sec * 1000 + tv.tv_usec / 1000;
 
-    sentinel = event_timer_rbtree.sentinel;
+    sentinel = tree->sentinel;
 
     for ( ;; ) {
 

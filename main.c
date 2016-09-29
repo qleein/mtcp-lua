@@ -15,16 +15,27 @@
 #include "event_timer.h"
 #include "mtcp_lua_socket_tcp.h"
 
+#include <mtcp_api.h>
+#include <mtcp_epoll.h>
+#include <debug.h>
+
+
 
 char mtcp_lua_coroutines_key;
 char mtcp_lua_mtcp_context_key;
 
 char *global_lua_script = NULL;
 
+#define MAX_CORE_LIMIT          16
+#define MAX_EPOLL_SIZE          1024
+
+static mtcp_lua_ctx_t   global_context[MAX_CORE_LIMIT];
+static pthread_t        app_thread[MAX_CORE_LIMIT];
+
 
 
 void
-mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx, int narg);
+mtcp_lua_run_thread(mtcp_lua_thread_ctx_t *ctx, int narg);
 void timer_handler(event_t *ev);
 
 
@@ -70,30 +81,7 @@ mtcp_lua_new_thread(lua_State *L, int *ref)
 static int
 mtcp_lua_thread_spawn(lua_State *L)
 {
-    int co_ref;
-    lua_State *co;
-
-    co = mtcp_lua_new_thread(L, &co_ref);
-    
-    lua_xmove(L, co, 1);
-
-    mtcp_lua_ctx_t  *ctx = malloc(sizeof(mtcp_lua_ctx_t));
-    memset(ctx, 0, sizeof(*ctx));
-
-    ctx->vm = co;
-    ctx->co_ref = co_ref;
-    ctx->ev.data = ctx;
-    ctx->ev.write = 0;
-    ctx->ev.timer_set = 0;
-    ctx->ev.timedout = 0;
-    ctx->ev.handler = timer_handler;
-    event_add_timer(&ctx->ev, 1000);
-
-    lua_pushlightuserdata(co, ctx);
-    lua_setglobal(co, mtcp_lua_ctx_key);
-
-
-    mtcp_lua_ctx_t *octx;
+    mtcp_lua_thread_ctx_t *octx;
     lua_getglobal(L, mtcp_lua_ctx_key);
     octx = lua_touserdata(L, -1);
     lua_pop(L, 1);
@@ -101,10 +89,33 @@ mtcp_lua_thread_spawn(lua_State *L)
     if (octx == NULL) {
         return luaL_error(L, "no mtcp_lua_ctx found");
     }
-    event_add_timer(&octx->ev, 2000);
-    printf("spawn thread successful and add timer");
-    //event_add_timer(&ctx->ev, 0);
-    return lua_yield(L, 1);
+
+    int co_ref;
+    lua_State *co;
+
+    co = mtcp_lua_new_thread(L, &co_ref);
+    lua_xmove(L, co, 1);
+
+    mtcp_lua_thread_ctx_t  *ctx = malloc(sizeof(mtcp_lua_thread_ctx_t));
+    memset(ctx, 0, sizeof(*ctx));
+
+    ctx->vm = co;
+    ctx->main = octx->main;
+    ctx->co_ref = co_ref;
+    ctx->ev.data = ctx;
+    ctx->ev.write = 0;
+    ctx->ev.timer_set = 0;
+    ctx->ev.timedout = 0;
+    ctx->ev.handler = NULL;
+
+    lua_pushlightuserdata(co, ctx);
+    lua_setglobal(co, mtcp_lua_ctx_key);
+
+    mtcp_lua_run_thread(ctx, 0);
+    
+    printf("spawn thread successful");
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 
@@ -120,16 +131,6 @@ int mtcp_lua_inject_mtcp_thread_api(lua_State *L)
     return 1;
 }
 
-mtcp_lua_ctx_t  *
-mtcp_lua_get_ctx(lua_State *L)
-{
-    mtcp_lua_ctx_t *ctx;
-    lua_getglobal(L, mtcp_lua_ctx_key);
-    ctx = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
-}
-
 
 int mtcp_lua_mtcp_sleep(lua_State *L)
 {
@@ -143,16 +144,13 @@ int mtcp_lua_mtcp_sleep(lua_State *L)
         return luaL_error(L, "invalid sleep duration");
     }
 
-    mtcp_lua_ctx_t *ctx;
-    lua_getglobal(L, mtcp_lua_ctx_key);
-    ctx = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    mtcp_lua_thread_ctx_t *ctx;
+    ctx = mtcp_lua_thread_get_ctx(L);
     if (ctx == NULL) {
         return luaL_error(L, "no mtcp_lua_ctx found");
     }
 
-    event_add_timer(&ctx->ev, delay);
+    event_add_timer(ctx->main, &ctx->ev, delay);
 
     return lua_yield(L, 0);
 }
@@ -200,7 +198,7 @@ lua_init(int flags) {
 
 
 void
-mtcp_lua_run_thread(mtcp_lua_ctx_t *ctx, int narg)
+mtcp_lua_run_thread(mtcp_lua_thread_ctx_t *ctx, int narg)
 {
     int ret;
     lua_State *L = ctx->vm;
@@ -252,7 +250,7 @@ void timer_handler(event_t *ev)
 {
     //printf("time reach.\n");
 
-    mtcp_lua_ctx_t *ctx = ev->data;
+    mtcp_lua_thread_ctx_t *ctx = ev->data;
 
     mtcp_lua_run_thread(ctx, 0);
 
@@ -269,12 +267,12 @@ void process_events_and_timers(void)
 }
 
 
-mtcp_lua_ctx_t *
-mtcp_lua_vm_init(mtcp_lua_thread_context_t *tctx)
+mtcp_lua_thread_ctx_t *
+mtcp_lua_vm_init(mtcp_lua_ctx_t *ctx)
 {
 
 	lua_State *L = lua_init(0);
-	if (!L) return 1;
+	if (!L) return NULL;
 
 	int ret = luaL_loadfile(L, global_lua_script);
 	if (ret != 0) {
@@ -283,27 +281,25 @@ mtcp_lua_vm_init(mtcp_lua_thread_context_t *tctx)
         exit(1);
 	}
 
-    mtcp_lua_ctx_t *ctx = malloc(sizeof(mtcp_lua_ctx_t));
-    ctx->vm = L;
+    mtcp_lua_thread_ctx_t *lctx = malloc(sizeof(mtcp_lua_thread_ctx_t));
+    lctx->vm = L;
+    lctx->main = ctx;
 
-    ctx->ev.data = ctx;
-    ctx->ev.write = 0;
-    ctx->ev.timer_set = 0;
-    ctx->ev.timedout = 0;
-    ctx->ev.handler = timer_handler;
-    event_add_timer(&ctx->ev, 0);
+    lctx->ev.data = ctx;
+    lctx->ev.write = 0;
+    lctx->ev.timer_set = 0;
+    lctx->ev.timedout = 0;
+    lctx->ev.handler = timer_handler;
+    event_add_timer(ctx, &lctx->ev, 0);
 
-    lua_pushlightuserdata(L, ctx);
-    lua_setglobal(L, mtcp_lua_ctx_key);
+    lua_pushlightuserdata(L, lctx);
+    lua_setglobal(L, mtcp_lua_thread_ctx_key);
 
-    lua_pushlightuserdata(L, tctx);
-    lua_setglobal(L, mtcp_lua_mtcp_context_key);
-    
-    return ctx;
+    return lctx;
 }
 
 
-
+/*  
 int epoll_add_event(int fd, int op, int events, void *ptr)
 {
     int rc;
@@ -318,20 +314,7 @@ int epoll_add_event(int fd, int op, int events, void *ptr)
     printf("fd:%d, op:%d, ptr:%lu.\n", fd, op, ptr);
     return 0;
 }
-
-typedef struct {
-    int             core;
-    mctx_t          mctx;
-    int             ep;
-    mtcp_lua_ctx_t  *vm_ctx;
-
-} mtcp_lua_thread_context_t;
-
-
-#define MAX_CORE_LIMIT          16
-#define MAX_EPOLL_SIZE          1024
-
-static mtcp_lua_thread_context_t   global_context[MAX_CORE_LIMIT];
+*/
 
 
 void *
@@ -344,11 +327,11 @@ thread_entry(void *arg)
         return NULL;
     }
 
-    mtcp_lua_thread_context_t *ctx;
-    mtcx_t  mctx;
+    mtcp_lua_ctx_t *ctx;
+    mctx_t  mctx;
 
     mctx = mtcp_create_context(core);
-    if (!ctx->mtcx) {
+    if (!ctx->mctx) {
         TRACE_ERROR("Failed to create mtcp context.\n");
         return NULL;
     }
@@ -359,17 +342,18 @@ thread_entry(void *arg)
 
     mtcp_core_affinitize(core);
 
-    int maxevent = 1024;
+    int maxevents = 1024;
     //mtcp_init_rss(mctx, saddr, IP_RANGE, daddr, dport);
-    ep = mtcp_epoll_create(mctx, maxevent);
+    int ep = mtcp_epoll_create(mctx, maxevents);
     if (ep < 0) {
         TRACE_ERROR("Failed to create epoll struct.\n");
         exit(EXIT_FAILURE);
     }
     ctx->ep = ep;
 
-    int max_events = MAX_EPOLL_SIZE
-    events = (struct mtcp_epoll_event *)calloc(max_events, sizeof(sturct mtcp_epoll_event));
+    int max_events = MAX_EPOLL_SIZE;
+    struct mtcp_epoll_event     *events;
+    events = (struct mtcp_epoll_event *)calloc(maxevents, sizeof(struct mtcp_epoll_event));
     if (events == NULL) {
         TRACE_ERROR("Failed to create event struct.\n");
         exit(EXIT_FAILURE);
@@ -381,11 +365,8 @@ thread_entry(void *arg)
         exit(EXIT_FAILURE);
     }
 
-    ctx->timer = event_timer_init(ctx);
-    if (ctx->timer == NULL) {
-        TRACE_ERROR("Failed to init timer.\n");
-        exit(EXIT_FAILURE);
-    }
+    event_timer_init(ctx);
+
     int nevents;
     for (;;) {
         nevents = mtcp_epoll_wait(mctx, ep, events, maxevents, 500);
@@ -435,7 +416,7 @@ int main(int argc, char **argv)
 
     mtcp_getconf(&mcfg);
     if (mcfg.num_cores > core_limit) {
-        mcfg.num_cores = core_limt;
+        mcfg.num_cores = core_limit;
     }
     num_cores = mcfg.num_cores;
 

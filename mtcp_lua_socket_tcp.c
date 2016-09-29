@@ -26,6 +26,7 @@ typedef struct {
     int         connected;
     int         busy;
     lua_State   *vm;
+    mtcp_lua_thread_ctx_t *vm_ctx;
     int         connect_timeout;
     int         read_timeout;
     int         write_timeout;
@@ -47,6 +48,7 @@ static int mtcp_lua_socket_tcp(lua_State *L)
     sctx->fd = -1;
     sctx->busy = 0;
     sctx->vm = L;
+    sctx->ctx = mtcp_lua_thread_get_ctx(L);
     sctx->connect_timeout = 6;
     sctx->read_timeout = 6;
     sctx->write_timeout = 6;
@@ -62,7 +64,7 @@ void mtcp_lua_socket_tcp_connect_handler(event_t *ev)
 {
 
     mtcp_lua_socket_tcp_ctx_t *sctx = ev->data;
-    mtcp_lua_ctx_t *ctx = mtcp_lua_get_ctx(sctx->vm);
+    mtcp_lua_ctx_t *ctx = ev->vm_ctx;
     lua_State *L = sctx->vm;
 
     if (ev->timedout) {
@@ -93,7 +95,8 @@ void mtcp_lua_socket_tcp_connect_handler(event_t *ev)
 }
 
 
-static int mtcp_lua_socket_tcp_connect(lua_State *L)
+static int
+mtcp_lua_socket_tcp_connect(lua_State *L)
 {
     int n = lua_gettop(L);
     if (n != 3) {
@@ -106,6 +109,7 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
         printf("Socket conneced. close current.\n");
         close(sctx->fd);
     }
+    mtcp_lua_thread_ctx_t *ctx = mtcp_lua_get_ctx(L);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -127,7 +131,7 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
     addr.sin_port = htons(port);
 
     int fd;
-    fd = socket(AF_INET, SOCK_STREAM, 0);
+    fd = mtcp_socket(ctx->main->mctx, AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         lua_pushnil(L);
         lua_pushliteral(L, "create socket failed");
@@ -135,13 +139,14 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
     }
 
     //set socket unblocking
-    if(fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+    ret = mtcp_setsock_nonblock(ctx->main->mctx, df);
+    if (ret < 0) {
         lua_pushnil(L);
         lua_pushliteral(L, "set noblock failed");
         return 2;
     }
 
-    ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    ret = mtcp_connect(ctx->main->mctx, fd, (struct sockaddr *)&addr, sizeof(addr));
     if (ret == 0) {
         sctx->fd = fd;
         sctx->connected = 1;
@@ -153,6 +158,7 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
     err = errno;
     if (err != EINPROGRESS && err != EAGAIN) {
         printf("ret:%d, errno:%d, err:%s.\n", ret, errno, strerror(errno));
+        mtcp_close(ctx->main->mctx, fd);
         lua_pushnil(L);
         lua_pushliteral(L, "connct failed.");
         return 2;
@@ -160,16 +166,28 @@ static int mtcp_lua_socket_tcp_connect(lua_State *L)
 
     sctx->fd = fd;
     sctx->vm = L;
+    sctx->vm_ctx = ctx;
 
-    mtcp_lua_ctx_t *ctx = mtcp_lua_get_ctx(L);
     event_t *ev = &ctx->ev;
     ev->data = sctx;
     ev->timedout = 0;
     ev->handler = mtcp_lua_socket_tcp_connect_handler;
 
-    event_add_timer(ev, sctx->connect_timeout);
-    epoll_add_event(sctx->fd, EPOLL_CTL_ADD, EPOLLOUT, ev);
 
+    struct mtcp_epoll_event mev;
+    mev.events = MTCP_EPOLLOUT;
+    mev.data.ptr = &ev;
+    ret = mtcp_epoll_ctl(ctx->main->mctx, ctx->main->ep, MTCP_EPOLL_CTL_ADD, ctx->fd, &mev);
+    if (ret != 0) {
+        mtcp_close(ctx->main->mctx, fd);
+        ctx->fd = -1;
+        ctx->connected = 0;
+        lua_pushnil(L);
+        lua_pushliteral(L, "mtcp epoll ctl failed.");
+        return 2;
+    }
+
+    event_add_timer(ev, sctx->connect_timeout);
     return lua_yield(L, 0);
 }
 
@@ -187,15 +205,12 @@ static int mtcp_lua_socket_tcp_send(lua_State *L)
         return luaL_error(L, "socket not connected.");
     }
 
-    mtcp_lua_thread_context_t *mctx;
-    lua_pushlightuserdata(L, mtcp_lua_thread_context_key);
-    lua_getglobal(L, -1);
-    mctx = (mtcp_lua_thread_context_t *)lua_to
-
+    mtcp_lua_thread_context_t *ctx;
+    ctx = mtcp_lua_thread_get_ctx(L);
 
     size_t len;
     const char *data = luaL_checklstring(L, 2, &len);
-    if (write(sctx->fd, data, len) != len) {
+    if (mtcp_write(ctx->main->mctx, sctx->fd, data, len) != len) {
         lua_pushnil(L);
         lua_pushliteral(L, "write socket failed");
         return 2;
@@ -211,22 +226,20 @@ void mtcp_lua_socket_tcp_recv_handler(event_t *ev)
     printf("Come here.\n");
     mtcp_lua_socket_tcp_ctx_t *sctx = ev->data;
     lua_State *L = sctx->vm;
-    mtcp_lua_ctx_t *ctx = mtcp_lua_get_ctx(L);
+    mtcp_lua_thread_ctx_t *ctx = mtcp_lua_get_ctx(L);
     if (ev->timedout) {
-        epoll_add_event(sctx->fd, EPOLL_CTL_DEL, 0, 0);
+        mtcp_epoll_ctl(ctx->main->mctx, ctx->main->ep, EPOLL_CTL_DEL, sctx->fd, 0);
         lua_pushnil(L);
         lua_pushliteral(L, "recv timedout");
         return mtcp_lua_run_thread(ctx, 2);
     } else {
-        event_del_timer(ev);
+        event_del_timer(ctx->main, ev);
     }
-
-
 
     int n;
     char buffer[1024];
 
-    n = read(sctx->fd, buffer, 1024);
+    n = mtcp_read(ctx->main->mtcp, sctx->fd, buffer, 1024);
 
     if (n > 0) {
         lua_pushlstring(L, buffer, n);
@@ -284,7 +297,8 @@ static int mtcp_lua_socket_tcp_recv(lua_State *L)
     }
 
     char buffer[1024];
-    n = read(sctx->fd, buffer, 1024);
+    mtcp_lua_ctx_t *ctx = mtcp_lua_get_ctx(L);
+    n = mtcp_read(ctx->main->mctx, sctx->fd, buffer, 1024);
     if (n > 0) {
         lua_pushlstring(L, buffer, n);
         return 1;
@@ -297,16 +311,18 @@ static int mtcp_lua_socket_tcp_recv(lua_State *L)
     }
 
     sctx->vm = L;
+    sctx->vm_ctx = ctx;
     //sctx->busy = 1;
     
-    mtcp_lua_ctx_t *ctx = mtcp_lua_get_ctx(L);
     event_t *ev = &ctx->ev;
     ev->data = sctx;
     ev->handler = mtcp_lua_socket_tcp_recv_handler;
 
-    event_add_timer(ev, 2);
-
-    epoll_add_event(sctx->fd, EPOLL_CTL_ADD, EPOLLIN, ev);
+    event_add_timer(ctx->main, ev, sctx->read_timeout);
+    struct mtcp_epoll_event     mev;
+    mev.events = EPOLLIN;
+    mev.data.ptr = ev;
+    mtcp_epoll_ctl(ctx->main->mctx, ctx->main->ep, EPOLL_CTL_ADD, sctx->fd, mev)
 
     printf("recv yield.\n");
     return lua_yield(L, 0);
@@ -329,7 +345,7 @@ static int mtcp_lua_socket_tcp_close(lua_State *L)
 static int mtcp_lua_socket_tcp_gc(lua_State *L) {
     mtcp_lua_socket_tcp_ctx_t *sctx;
     sctx = (mtcp_lua_socket_tcp_ctx_t *)lua_touserdata(L, 1);
-    if (sctx->fd != 1) {
+    if (sctx->fd != -1) {
         close(sctx->fd);
     }
     printf("gcc called.\n");

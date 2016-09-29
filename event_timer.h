@@ -9,7 +9,7 @@
 #define _NGX_EVENT_TIMER_H_INCLUDED_
 
 #include "rbtree.h"
-#include "event_timer.h"
+#include "main.h"
 #include <sys/time.h>
 
 #define TIMER_INFINITE  (msec_t) -1
@@ -19,13 +19,11 @@
 typedef rbtree_key                  msec_t;
 typedef rbtree_key_int              msec_int_t;
 
-int event_timer_init(void);
-msec_t event_find_timer(void);
-void event_expire_timers(void);
 
+int event_timer_init(mtcp_lua_ctx_t *);
+msec_t event_find_timer(rbtree_t *);
+void event_expire_timers(rbtree_t *);
 
-
-extern rbtree_t  event_timer_rbtree;
 
 typedef struct event_s event_t;
 typedef void (*event_handler_pt)(event_t *);
@@ -43,11 +41,11 @@ struct event_s {
 
 
 static inline void
-event_del_timer(event_t *ev)
+event_del_timer(mtcp_lua_ctx_t *ctx, event_t *ev)
 {
     //ngx_mutex_lock(ngx_event_timer_mutex);
 
-    rbtree_delete(&event_timer_rbtree, &ev->timer);
+    rbtree_delete(&ctx->timer, &ev->timer);
 
     //ngx_mutex_unlock(ngx_event_timer_mutex);
 
@@ -62,7 +60,7 @@ event_del_timer(event_t *ev)
 
 
 static inline void
-event_add_timer(event_t *ev, msec_t timer)
+event_add_timer(mtcp_lua_ctx_t *ctx, event_t *ev, msec_t timer)
 {
     msec_t      key;
     msec_int_t  diff;
@@ -86,14 +84,14 @@ event_add_timer(event_t *ev, msec_t timer)
             return;
         }
 
-        event_del_timer(ev);
+        event_del_timer(ctx, ev);
     }
 
     ev->timer.key = key;
 
     //ngx_mutex_lock(ngx_event_timer_mutex);
 
-    rbtree_insert(&event_timer_rbtree, &ev->timer);
+    rbtree_insert(&ctx->timer, &ev->timer);
 
     //ngx_mutex_unlock(ngx_event_timer_mutex);
 
