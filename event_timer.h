@@ -25,21 +25,6 @@ msec_t event_find_timer(rbtree_t *);
 void event_expire_timers(rbtree_t *);
 
 
-typedef struct event_s event_t;
-typedef void (*event_handler_pt)(event_t *);
-
-struct event_s {
-    void        *data;
-    int          write;
-    int          timedout;
-    int          timer_set;
-
-    event_handler_pt     handler;
-    rbtree_node_t        timer;
-};
-
-
-
 static inline void
 event_del_timer(mtcp_lua_ctx_t *ctx, event_t *ev)
 {

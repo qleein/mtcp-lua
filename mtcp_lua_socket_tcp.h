@@ -5,8 +5,8 @@
  *      Author: arch
  */
 
-#ifndef LDPDK_H_
-#define LDPDK_H_
+#ifndef _MTCP_LUA_SOCKET_TCP_H_
+#define _MTCP_LUA_SOCKET_TCP_H_
 
 
 #include <lua.h>

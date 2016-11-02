@@ -96,7 +96,6 @@ event_expire_timers(rbtree_t *tree)
             ev->timer_set = 0;
 
             ev->timedout = 1;
-
             ev->handler(ev);
 
             continue;

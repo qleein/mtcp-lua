@@ -5,8 +5,8 @@
  */
 
 
-#ifndef _NGX_EVENT_TIMER_H_INCLUDED_
-#define _NGX_EVENT_TIMER_H_INCLUDED_
+#ifndef _NGX_EVENT_H_INCLUDED_
+#define _NGX_EVENT_H_INCLUDED_
 
 
 #include "rbtree.h"

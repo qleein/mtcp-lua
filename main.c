@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <sys/queue.h>
 #include <sys/epoll.h>
+#include <getopt.h>
+#include <fcntl.h>
 
 #include <lua.h>
 #include <lualib.h>
@@ -14,6 +16,7 @@
 #include "main.h"
 #include "event_timer.h"
 #include "mtcp_lua_socket_tcp.h"
+#include "mtcp_lua_log.h"
 
 #include <mtcp_api.h>
 #include <mtcp_epoll.h>
@@ -25,6 +28,10 @@ char mtcp_lua_coroutines_key;
 char mtcp_lua_mtcp_context_key;
 
 char *global_lua_script = NULL;
+char work_dir[1024];
+char log_file[1024];
+
+
 
 #define MAX_CORE_LIMIT          16
 #define MAX_EPOLL_SIZE          1024
@@ -150,6 +157,11 @@ int mtcp_lua_mtcp_sleep(lua_State *L)
         return luaL_error(L, "no mtcp_lua_ctx found");
     }
 
+    ctx->ev.data = ctx;
+    ctx->ev.write = 0;
+    ctx->ev.timer_set = 0;
+    ctx->ev.timedout = 0;
+    ctx->ev.handler = timer_handler;
     event_add_timer(ctx->main, &ctx->ev, delay);
 
     return lua_yield(L, 0);
@@ -248,7 +260,7 @@ mtcp_lua_run_thread(mtcp_lua_thread_ctx_t *ctx, int narg)
 
 void timer_handler(event_t *ev)
 {
-    //printf("time reach.\n");
+    printf("time reach.\n");
 
     mtcp_lua_thread_ctx_t *ctx = ev->data;
 
@@ -257,7 +269,7 @@ void timer_handler(event_t *ev)
     return;
 }
 
-
+/*
 void process_events_and_timers(void)
 {
     printf("process_events_and_timers called.\n");
@@ -265,6 +277,7 @@ void process_events_and_timers(void)
     event_expire_timers();
     return;
 }
+*/
 
 
 mtcp_lua_thread_ctx_t *
@@ -285,7 +298,7 @@ mtcp_lua_vm_init(mtcp_lua_ctx_t *ctx)
     lctx->vm = L;
     lctx->main = ctx;
 
-    lctx->ev.data = ctx;
+    lctx->ev.data = lctx;
     lctx->ev.write = 0;
     lctx->ev.timer_set = 0;
     lctx->ev.timedout = 0;
@@ -331,11 +344,12 @@ thread_entry(void *arg)
     mctx_t  mctx;
 
     mctx = mtcp_create_context(core);
-    if (!ctx->mctx) {
+    if (!mctx) {
         TRACE_ERROR("Failed to create mtcp context.\n");
         return NULL;
     }
-
+    mtcp_init_rss(mctx, inet_addr("192.168.0.4"), 1, inet_addr("192.168.0.105"), 9000);
+    
     ctx = &global_context[core];
     ctx->mctx = mctx;
     ctx->core = core;
@@ -359,17 +373,23 @@ thread_entry(void *arg)
         exit(EXIT_FAILURE);
     }
 
+    event_timer_init(ctx);
+
     ctx->vm_ctx = mtcp_lua_vm_init(ctx);
     if (ctx->vm_ctx == NULL) {
         TRACE_ERROR("Failed to init lua.\n");
         exit(EXIT_FAILURE);
     }
 
-    event_timer_init(ctx);
-
     int nevents;
+    int count = 0;
     for (;;) {
+        count++;
+        if (count == 10) {
+            exit(5);
+        }
         nevents = mtcp_epoll_wait(mctx, ep, events, maxevents, 500);
+        fprintf(stderr, "nevents: %d.\n", nevents);
         if (nevents < 0) {
             if (errno != EINTR) {
                 TRACE_ERROR("mtcp_epoll_wait failed, ret:%d\n", nevents);
@@ -379,6 +399,7 @@ thread_entry(void *arg)
         int i;
         for (i = 0; i < nevents; i++) {
             event_t *ev = events[i].data.ptr;
+            fprintf(stderr, "data.ptr:%p.\n", ev);
             if (!ev->handler) {
                 TRACE_ERROR("No handler defined for current event.\n");
                 continue;
@@ -387,31 +408,104 @@ thread_entry(void *arg)
             ev->handler(ev);
         }
 
-        event_expire_timers();
-        printf("a main cycle end.\n");
+        event_expire_timers(&ctx->timer);
+        sleep(1);
     }
 
     return 0;
 }
 
 
-int main(int argc, char **argv)
+void
+usage(void)
 {
-    struct mtcp_conf    mcfg;
+    fprintf(stderr, MYNAME " [options] lua_script\n"
+            "  -f       foreground\n"
+            "  -l       log level. 1-5\n"
+            "  -h       this help\n");
+    exit(0);
+}
 
-    if (argc != 2) {
-        TRACE_CONFIG("Usage: %s lua_script\n", argv[0]);
-        return -1;
+static void
+daemonize()
+{
+    umask(0);
+
+    pid_t   pid;
+    int     fd0, fd1, fd2;
+
+    if (fork()) exit(0);
+
+    setsid();
+
+    if (chdir("/") < 0) {
+        FATAL("can not change directory to /");
     }
 
-    global_lua_script = argv[1];
+    fd0 = open("/dev/null", O_RDWR);
+    fd1 = dup(0);
+    fd2 = dup(0);
+    
+    if (chdir(work_dir) < 0) {
+        FATAL("can not change directory to /");
+    }
+}
+
+
+int main(int argc, char **argv)
+{
+    int c;
+    int tmp_foreground = 0;
+    int log_level = 4;
+    
+    while ((c = getopt(argc, argv, "fl:h")) != -1) {
+        switch (c) {
+        case 'f':
+            tmp_foreground = 1;
+            break;
+        case 'l':
+            log_level = atoi(optarg);
+            break;
+        case 'h':
+            usage();
+            break;
+
+        default:
+            usage();
+            break;
+        }
+    }
+
+    argc -= optind;
+    argv += optind;
+
+    if (argc != 1) {
+        usage();
+    }
+
+    global_lua_script = argv[0];
+    getcwd(work_dir, 1024);
+    snprintf(log_file, 1024, "%s/mtcp_lua.log", work_dir);
+
+    if (!tmp_foreground) {
+        daemonize();
+        mtcp_lua_log_init(log_level, log_file);
+    } else {
+        mtcp_lua_log_init(log_level, NULL);
+    }
+
+    DEBUG("begin");
+    struct mtcp_conf    mcfg;
+
+    if (global_lua_script == NULL) {
+        FATAL("Usage: %s lua_script\n", argv[0]);
+    }
 
     int num_cores = GetNumCPUs();
     int core_limit = num_cores < MAX_CORE_LIMIT ? num_cores : MAX_CORE_LIMIT;
     int ret = mtcp_init("mtcp_lua.conf");
     if (ret) {
-        TRACE_ERROR("Failed to initialize mtcp.\n");
-        exit(EXIT_FAILURE);
+        FATAL("Failed to initialize mtcp.\n");
     }
 
     mtcp_getconf(&mcfg);
@@ -423,21 +517,19 @@ int main(int argc, char **argv)
     mtcp_setconf(&mcfg);
 
     int i;
-
     int cores[MAX_CORE_LIMIT];
     for (i = 0; i < num_cores; i++) {
         cores[i] = i;
         if (pthread_create(&app_thread[i], NULL, thread_entry,
                            (void *)&cores[i]))
         {
-            TRACE_ERROR("Failed to create thread.\n");
-            exit(-1);
+            FATAL("Failed to create thread.\n");
         }
     }
 
     for (i = 0; i < num_cores; i++) {
         pthread_join(app_thread[i], NULL);
-        TRACE_INFO("thread %d joined.\n", i);
+        FATAL("thread %d joined.\n", i);
     }
 
     mtcp_destroy();

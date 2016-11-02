@@ -11,6 +11,10 @@
 #include <lauxlib.h>
 #include <mtcp_api.h>
 
+
+#define MYNAME  "mtcp_lua"
+
+
 #define mtcp_lua_ctx_key            "__mtcp_lua_ctx_t"
 #define mtcp_lua_thread_ctx_key     "__mtcp_lua_thread_ctx_t"
 

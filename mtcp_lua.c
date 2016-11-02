@@ -518,6 +518,17 @@ PrintStats()
 			total.errors, total.timedout);
 #endif
 }
+
+int thread_start(void *arg)
+{
+    int core = *(int *)arg;
+
+    mtcp_core_affinitize(core);
+
+
+}
+
+
 /*----------------------------------------------------------------------------*/
 void *
 RunWgetMain(void *arg)
@@ -714,18 +725,8 @@ main(int argc, char **argv)
 
 	mtcp_register_signal(SIGINT, SignalHandler);
 
-	flow_per_thread = total_flows / core_limit;
-	flow_remainder_cnt = total_flows % core_limit;
 	for (i = 0; i < core_limit; i++) {
 		cores[i] = i;
-		done[i] = FALSE;
-		flows[i] = flow_per_thread;
-
-		if (flow_remainder_cnt-- > 0)
-			flows[i]++;
-
-		if (flows[i] == 0)
-			continue;
 
 		if (pthread_create(&app_thread[i], 
 					NULL, RunWgetMain, (void *)&cores[i])) {
