@@ -10,11 +10,11 @@ local function func(ip, port)
   local sock = mtcp.socket.tcp()
   local ok, err = sock:connect(ip, port)
   if not ok then
-    print("connect failed: ', err)
+    print("connect failed, err: ", err)
     return
   end
   
-  ok, err = sock:send('GET / HTTP/1.0\r\nConnection:close\r\n\r\n')
+  ok, err = sock:send("GET / HTTP/1.0\r\nConnection:close\r\n\r\n")
   if not ok then
     print("send failed, err: ", err)
     return
@@ -22,7 +22,7 @@ local function func(ip, port)
   
   ok, err = sock:recv()
   if not ok then
-    print("recv failed, err ", err)
+    print("recv failed, err: ", err)
     return
   end
   
@@ -41,7 +41,7 @@ for i = 1, 10 do
   
   local ok, err = mtcp.thread.spawn(func, ip, port)
   if not ok then
-    print("spawn thread failed, err ", err)
+    print("spawn thread failed, err: ", err)
     return
   end
 end
