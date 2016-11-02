@@ -2,7 +2,8 @@
 Asynchronous tcp client in lua, based on mtcp and intel dpdk. It's a demo.
 
 #Example
-```
+
+```lua
 --test.lua
 -- extra: route and arp needed for use mtcp.
 local function func(ip, port)
@@ -47,3 +48,4 @@ end
 
 mtcp.sleep(10)
 print("Main thread exit")
+```
