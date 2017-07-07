@@ -89,10 +89,7 @@ static int
 mtcp_lua_thread_spawn(lua_State *L)
 {
     mtcp_lua_thread_ctx_t *octx;
-    lua_getglobal(L, mtcp_lua_ctx_key);
-    octx = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    octx = mtcp_lua_thread_get_ctx(L);
     if (octx == NULL) {
         return luaL_error(L, "no mtcp_lua_ctx found");
     }
@@ -114,13 +111,14 @@ mtcp_lua_thread_spawn(lua_State *L)
     ctx->ev.timer_set = 0;
     ctx->ev.timedout = 0;
     ctx->ev.handler = NULL;
-
+    mtcp_lua_thread_set_ctx(co, ctx);
+    /*
     lua_pushlightuserdata(co, ctx);
     lua_setglobal(co, mtcp_lua_ctx_key);
-
+    */
     mtcp_lua_run_thread(ctx, 0);
     
-    printf("spawn thread successful");
+    //printf("spawn thread successful");
     lua_pushboolean(L, 1);
     return 1;
 }
@@ -219,10 +217,10 @@ mtcp_lua_run_thread(mtcp_lua_thread_ctx_t *ctx, int narg)
 	ret = lua_resume(L, narg);
     switch (ret) {
     case LUA_YIELD:
-        printf("yield.\n");
+        //printf("yield.\n");
         return;
     case 0:
-        printf("exec file successful.\n");
+        //printf("exec file successful.\n");
         break;
 
     case LUA_ERRRUN:
@@ -260,7 +258,7 @@ mtcp_lua_run_thread(mtcp_lua_thread_ctx_t *ctx, int narg)
 
 void timer_handler(event_t *ev)
 {
-    printf("time reach.\n");
+    //printf("time reach.\n");
 
     mtcp_lua_thread_ctx_t *ctx = ev->data;
 
@@ -305,8 +303,7 @@ mtcp_lua_vm_init(mtcp_lua_ctx_t *ctx)
     lctx->ev.handler = timer_handler;
     event_add_timer(ctx, &lctx->ev, 0);
 
-    lua_pushlightuserdata(L, lctx);
-    lua_setglobal(L, mtcp_lua_thread_ctx_key);
+    mtcp_lua_thread_set_ctx(L, lctx);
 
     return lctx;
 }
@@ -348,7 +345,8 @@ thread_entry(void *arg)
         TRACE_ERROR("Failed to create mtcp context.\n");
         return NULL;
     }
-    mtcp_init_rss(mctx, inet_addr("192.168.0.4"), 1, inet_addr("192.168.0.105"), 9000);
+    //mtcp_init_rss(mctx, inet_addr("192.168.0.4"), 1, inet_addr("192.168.0.105"), 9000);
+    mtcp_init_rss(mctx, inet_addr("10.10.10.241"), 1, inet_addr("10.10.10.240"), 9000);
     
     ctx = &global_context[core];
     ctx->mctx = mctx;
@@ -356,7 +354,7 @@ thread_entry(void *arg)
 
     mtcp_core_affinitize(core);
 
-    int maxevents = 1024;
+    int maxevents = 10240;
     //mtcp_init_rss(mctx, saddr, IP_RANGE, daddr, dport);
     int ep = mtcp_epoll_create(mctx, maxevents);
     if (ep < 0) {
@@ -389,7 +387,7 @@ thread_entry(void *arg)
             exit(5);
         }
         nevents = mtcp_epoll_wait(mctx, ep, events, maxevents, 500);
-        fprintf(stderr, "nevents: %d.\n", nevents);
+        //fprintf(stderr, "nevents: %d.\n", nevents);
         if (nevents < 0) {
             if (errno != EINTR) {
                 TRACE_ERROR("mtcp_epoll_wait failed, ret:%d\n", nevents);
@@ -399,7 +397,7 @@ thread_entry(void *arg)
         int i;
         for (i = 0; i < nevents; i++) {
             event_t *ev = events[i].data.ptr;
-            fprintf(stderr, "data.ptr:%p.\n", ev);
+            //fprintf(stderr, "data.ptr:%p.\n", ev);
             if (!ev->handler) {
                 TRACE_ERROR("No handler defined for current event.\n");
                 continue;

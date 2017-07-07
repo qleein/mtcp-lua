@@ -62,9 +62,9 @@ mtcp_lua_epoll_ctl(mtcp_lua_socket_tcp_ctx_t *sctx, int op, int event, void *ptr
     mtcp_lua_thread_ctx_t *ctx = sctx->vm_ctx;
     if (mtcp_epoll_ctl(ctx->main->mctx, ctx->main->ep, op, sctx->fd, &mev) != 0) {
         fprintf(stderr, "mtcp_epoll_ctl failed,\n");
+        return -1;
     }
 
-        fprintf(stderr, "mtcp_epoll_ctl successful.op:%d.\n", op);
     if (op == MTCP_EPOLL_CTL_DEL) {
         sctx->active = 0;
     } else {
@@ -125,7 +125,7 @@ void mtcp_lua_socket_tcp_connect_handler(event_t *ev)
     if (mtcp_getsockopt(ctx->main->mctx, sctx->fd, SOL_SOCKET, SO_ERROR, (void*)&err, &len) == -1) {
         err = errno;
     }
-    fprintf(stderr, "fd:%d.\n", sctx->fd);
+    //fprintf(stderr, "fd:%d.\n", sctx->fd);
     if (err) {
         printf("connect failed, errno:%d. err:%s.\n", err, strerror(err));
         return;
@@ -201,7 +201,7 @@ mtcp_lua_socket_tcp_connect(lua_State *L)
 
     int err;
     err = errno;
-    fprintf(stderr, "connect ret:%d, err:%d\n", ret, err);
+    //fprintf(stderr, "connect ret:%d, err:%d\n", ret, err);
     if (err != EINPROGRESS && err != EAGAIN) {
         printf("ret:%d, errno:%d, err:%s.\n", ret, errno, strerror(errno));
         mtcp_lua_socket_tcp_close_helper(ctx, sctx);
@@ -266,7 +266,7 @@ static int mtcp_lua_socket_tcp_send(lua_State *L)
 
 void mtcp_lua_socket_tcp_recv_handler(event_t *ev)
 {
-    printf("Come here.\n");
+    //printf("Come here.\n");
     mtcp_lua_socket_tcp_ctx_t *sctx = ev->data;
     lua_State *L = sctx->vm;
     mtcp_lua_thread_ctx_t *ctx = mtcp_lua_thread_get_ctx(L);
@@ -287,7 +287,7 @@ void mtcp_lua_socket_tcp_recv_handler(event_t *ev)
     luaL_buffinit(L, &b);
     while (1) {
         n = mtcp_read(ctx->main->mctx, sctx->fd, buffer, 1024);
-        fprintf(stderr, "recv read: %d.\n", sctx->fd);
+        //fprintf(stderr, "recv read: %d.\n", sctx->fd);
         if (n > 0) {
             luaL_addlstring(&b, buffer, n);
             sum += n;
@@ -326,7 +326,7 @@ static int
 mtcp_lua_socket_tcp_settimeout(lua_State *L)
 {
     int n = lua_gettop(L);
-    if (n != 1) {
+    if (n != 2) {
         return luaL_error(L, "expect 2 arguments, but got %d", n);
     }
 
@@ -334,7 +334,7 @@ mtcp_lua_socket_tcp_settimeout(lua_State *L)
     sctx = (mtcp_lua_socket_tcp_ctx_t *)lua_touserdata(L, 1);
 
     int timeout = luaL_checkint(L, 2);
-    if (timeout <= 0 || timeout > 600) {
+    if (timeout <= 0 || timeout > 600000) {
         return luaL_error(L, "exceed limit.");
     }
     sctx->connect_timeout = timeout;
@@ -362,7 +362,7 @@ static int mtcp_lua_socket_tcp_recv(lua_State *L)
     mtcp_lua_thread_ctx_t *ctx = mtcp_lua_thread_get_ctx(L);
     n = mtcp_read(ctx->main->mctx, sctx->fd, buffer, 8192);
     if (n > 0) {
-    fprintf(stderr, "fd: %d, ret: %d, %s.\n", sctx->fd, n, buffer);
+        //fprintf(stderr, "fd: %d, ret: %d, %s.\n", sctx->fd, n, buffer);
         lua_pushlstring(L, buffer, n);
         return 1;
     }
@@ -384,10 +384,10 @@ static int mtcp_lua_socket_tcp_recv(lua_State *L)
 
     event_add_timer(ctx->main, ev, sctx->read_timeout);
     //mtcp_lua_epoll_ctl(sctx, MTCP_EPOLL_CTL_DEL, 0, 0);
-    fprintf(stderr, "fd:%d.\n", sctx->fd);
+    //fprintf(stderr, "fd:%d.\n", sctx->fd);
     mtcp_lua_epoll_ctl(sctx, MTCP_EPOLL_CTL_ADD, MTCP_EPOLLIN, ev);
 
-    printf("recv yield.\n");
+   // printf("recv yield.\n");
     return lua_yield(L, 0);
 }
 
