@@ -90,6 +90,7 @@ mtcp_lua_thread_spawn(lua_State *L)
 {
     mtcp_lua_thread_ctx_t *octx;
     octx = mtcp_lua_thread_get_ctx(L);
+
     if (octx == NULL) {
         return luaL_error(L, "no mtcp_lua_ctx found");
     }
@@ -111,6 +112,7 @@ mtcp_lua_thread_spawn(lua_State *L)
     ctx->ev.timer_set = 0;
     ctx->ev.timedout = 0;
     ctx->ev.handler = NULL;
+
     mtcp_lua_thread_set_ctx(co, ctx);
     /*
     lua_pushlightuserdata(co, ctx);
@@ -345,6 +347,7 @@ thread_entry(void *arg)
         TRACE_ERROR("Failed to create mtcp context.\n");
         return NULL;
     }
+
     //mtcp_init_rss(mctx, inet_addr("192.168.0.4"), 1, inet_addr("192.168.0.105"), 9000);
     mtcp_init_rss(mctx, inet_addr("10.10.10.241"), 1, inet_addr("10.10.10.240"), 9000);
     
@@ -387,6 +390,7 @@ thread_entry(void *arg)
             exit(5);
         }
         nevents = mtcp_epoll_wait(mctx, ep, events, maxevents, 500);
+
         //fprintf(stderr, "nevents: %d.\n", nevents);
         if (nevents < 0) {
             if (errno != EINTR) {

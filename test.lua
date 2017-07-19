@@ -46,4 +46,3 @@ for i = 1, 8000 do
 end
 
 mtcp.sleep(10)
-print("Exit")
